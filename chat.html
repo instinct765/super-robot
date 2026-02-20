@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI 对话 · 芝麻红薯饼</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      :root {
+        --c-bg: #fdf7f4;
+        --c-surface: #ffffff;
+        --c-primary: #e6c9cf;
+        --c-primary-deep: #b46b86;
+        --c-text: #4c2f33;
+        --c-muted: #9e7a7f;
+      }
+      body {
+        background: var(--c-bg);
+        color: var(--c-text);
+      }
+      .surface {
+        background: var(--c-surface);
+      }
+      .primary {
+        background: var(--c-primary);
+      }
+      .primary-deep {
+        background: var(--c-primary-deep);
+      }
+      .text-muted {
+        color: var(--c-muted);
+      }
+      .text-bubble-user {
+        background: var(--c-primary-deep);
+        color: #fff;
+      }
+      .text-bubble-ai {
+        background: var(--c-surface);
+        border: 1px solid var(--c-primary);
+      }
+      .history-item:hover {
+        background: var(--c-primary);
+      }
+      /* 流式打字光标 */
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+      .cursor::after {
+        content: "▎";
+        animation: blink 1s infinite;
+        color: var(--c-primary-deep);
+      }
+      /* 滚动条美化 */
+      .custom-scroll::-webkit-scrollbar {
+        width: 6px;
+      }
+      .custom-scroll::-webkit-scrollbar-thumb {
+        background: var(--c-primary);
+        border-radius: 3px;
+      }
+      .custom-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body class="antialiased">
+    <div class="flex h-screen">
+      <!-- 左侧历史记录栏 -->
+      <aside class="w-64 shrink-0 surface border-r border-[var(--c-primary)] p-4 flex flex-col">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="font-semibold text-sm">历史对话</h2>
+          <button
+            id="newChat"
+            class="text-xs px-2 py-1 rounded-md surface border border-[var(--c-primary)] hover:bg-[var(--c-primary)] transition"
+          >
+            新建
+          </button>
+        </div>
+        <ul id="historyList" class="flex-1 overflow-y-auto custom-scroll space-y-2 pr-1">
+          <!-- 动态插入历史记录 -->
+        </ul>
+      </aside>
+
+      <!-- 主对话区 -->
+      <main class="flex-1 flex flex-col">
+        <!-- 消息区 -->
+        <section id="chatWindow" class="flex-1 overflow-y-auto px-6 py-4 custom-scroll"></section>
+
+        <!-- 输入区 -->
+        <footer class="shrink-0 surface border-t border-[var(--c-primary)] p-4">
+          <form id="chatForm" class="flex items-end gap-3">
+            <textarea
+              id="userInput"
+              rows="1"
+              placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+              class="flex-1 resize-none rounded-lg px-3 py-2 surface border border-[var(--c-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--c-primary-deep)]"
+            ></textarea>
+            <button
+              type="submit"
+              id="sendBtn"
+              class="px-4 py-2 rounded-lg primary-deep text-white hover:opacity-90 transition"
+            >
+              发送
+            </button>
+          </form>
+        </footer>
+      </main>
+    </div>
+
+    <script>
+      /* ===== 配置 ===== */
+      const API_KEY = "sk-cea233d8fefd49c38f9585a9108f132a";
+      const API_URL = "https://api.deepseek.com/v1/chat/completions";
+
+      /* ===== 简易状态 ===== */
+      let currentSessionId = null;
+      let streamingController = null;
+
+      /* ===== 历史记录持久化 ===== */
+      const STORAGE_KEY = "chatHistory";
+      function loadHistory() {
+        try {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+        } catch {
+          return [];
+        }
+      }
+      function saveHistory(list) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+      }
+
+      /* ===== DOM 工具 ===== */
+      const $ = (sel) => document.querySelector(sel);
+      const chatWindow = $("#chatWindow");
+      const historyList = $("#historyList");
+      const chatForm = $("#chatForm");
+      const userInput = $("#userInput");
+      const sendBtn = $("#sendBtn");
+      const newChatBtn = $("#newChat");
+
+      /* ===== 渲染历史列表 ===== */
+      function renderHistory() {
+        const list = loadHistory();
+        historyList.innerHTML = "";
+        list.forEach((item) => {
+          const li = document.createElement("li");
+          li.className = "history-item rounded-md px-2 py-1.5 text-sm cursor-pointer";
+          li.textContent = item.title || "未命名对话";
+          li.dataset.id = item.id;
+          li.addEventListener("click", () => loadSession(item.id));
+          historyList.appendChild(li);
+        });
+      }
+
+      /* ===== 新建对话 ===== */
+      function newSession() {
+        currentSessionId = Date.now().toString();
+        chatWindow.innerHTML = "";
+        renderHistory();
+      }
+
+      /* ===== 加载历史对话 ===== */
+      function loadSession(id) {
+        const list = loadHistory();
+        const item = list.find((i) => i.id === id);
+        if (!item) return;
+        currentSessionId = id;
+        chatWindow.innerHTML = "";
+        item.messages.forEach((msg) => appendMessage(msg.role, msg.content, false));
+      }
+
+      /* ===== 追加消息到界面 ===== */
+      function appendMessage(role, content, streaming = false) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "mb-4 flex";
+        const bubble = document.createElement("div");
+        bubble.className = "max-w-xl px-4 py-2 rounded-2xl text-sm leading-relaxed";
+        if (role === "user") {
+          wrapper.classList.add("justify-end");
+          bubble.classList.add("text-bubble-user");
+        } else {
+          wrapper.classList.add("justify-start");
+          bubble.classList.add("text-bubble-ai");
+          if (streaming) bubble.classList.add("cursor");
+        }
+        bubble.textContent = content;
+        wrapper.appendChild(bubble);
+        chatWindow.appendChild(wrapper);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+        return bubble;
+      }
+
+      /* ===== 流式请求 ===== */
+      async function streamChat(messages) {
+        streamingController = new AbortController();
+        const response = await fetch(API_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "deepseek-chat",
+            messages,
+            stream: true,
+          }),
+          signal: streamingController.signal,
+        });
+
+        if (!response.ok) throw new Error("网络错误");
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let aiBubble = null;
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const data = line.slice(6);
+              if (data === "[DONE]") continue;
+              try {
+                const parsed = JSON.parse(data);
+                const delta = parsed.choices?.[0]?.delta?.content || "";
+                if (delta) {
+                  if (!aiBubble) aiBubble = appendMessage("assistant", "", true);
+                  aiBubble.textContent += delta;
+                  chatWindow.scrollTop = chatWindow.scrollHeight;
+                }
+              } catch {}
+            }
+          }
+        }
+
+        if (aiBubble) aiBubble.classList.remove("cursor");
+        return aiBubble ? aiBubble.textContent : "";
+      }
+
+      /* ===== 发送消息 ===== */
+      chatForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const text = userInput.value.trim();
+        if (!text) return;
+        userInput.value = "";
+        sendBtn.disabled = true;
+
+        appendMessage("user", text);
+
+        const list = loadHistory();
+        let session = list.find((i) => i.id === currentSessionId);
+        if (!session) {
+          session = { id: currentSessionId, title: text.slice(0, 20), messages: [] };
+          list.unshift(session);
+        }
+        session.messages.push({ role: "user", content: text });
+
+        try {
+          const reply = await streamChat(session.messages);
+          session.messages.push({ role: "assistant", content: reply });
+        } catch (err) {
+          appendMessage("assistant", "❗ 请求失败，请稍后重试");
+        } finally {
+          sendBtn.disabled = false;
+          saveHistory(list);
+          renderHistory();
+        }
+      });
+
+      /* ===== 输入框快捷 ===== */
+      userInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          chatForm.dispatchEvent(new Event("submit"));
+        }
+      });
+
+      /* ===== 新建对话按钮 ===== */
+      newChatBtn.addEventListener("click", newSession);
+
+      /* ===== 初始化 ===== */
+      newSession();
+      renderHistory();
+    </script>
+  </body>
+</html>
