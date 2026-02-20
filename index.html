@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI 对话 · 芝麻红薯饼</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入卡通字体 -->
+    <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&display=swap" rel="stylesheet">
     <style>
       :root {
         --c-bg: #fdf7f4;
@@ -34,9 +36,14 @@
         background: var(--c-primary-deep);
         color: #fff;
       }
+      /* AI气泡：同色调圆角阴影 + 卡通字体 */
       .text-bubble-ai {
         background: var(--c-surface);
         border: 1px solid var(--c-primary);
+        box-shadow: 0 4px 12px -2px rgba(180,107,134,.25);
+        font-family: 'Ma Shan Zheng', cursive;
+        font-size: 1rem;
+        line-height: 1.6;
       }
       .history-item:hover {
         background: var(--c-primary);
@@ -258,6 +265,25 @@
 
         appendMessage("user", text);
 
+        // 先尝试本地加法
+        const calcRes = tryCalcAdd(text);
+        if (calcRes) {
+          appendMessage("assistant", `计算结果：${calcRes}`);
+          sendBtn.disabled = false;
+          // 保存到历史
+          const list = loadHistory();
+          let session = list.find((i) => i.id === currentSessionId);
+          if (!session) {
+            session = { id: currentSessionId, title: text.slice(0, 20), messages: [] };
+            list.unshift(session);
+          }
+          session.messages.push({ role: "user", content: text });
+          session.messages.push({ role: "assistant", content: `计算结果：${calcRes}` });
+          saveHistory(list);
+          renderHistory();
+          return;
+        }
+
         const list = loadHistory();
         let session = list.find((i) => i.id === currentSessionId);
         if (!session) {
@@ -288,6 +314,17 @@
 
       /* ===== 新建对话按钮 ===== */
       newChatBtn.addEventListener("click", newSession);
+
+      /* ===== AI 原生加法功能 ===== */
+      function tryCalcAdd(text) {
+        // 匹配：加法 3 4 / 3+4 / 3 加 4 等写法
+        const m = text.trim().match(/^\s*(?:加法?|加|\+)\s*([+-]?\d+(?:\.\d+)?)\s*([+加]\s*([+-]?\d+(?:\.\d+)?)\s*)*$/i);
+        if (!m) return null;
+        const nums = text.match(/[+-]?\d+(?:\.\d+)?/g);
+        if (!nums || nums.length < 2) return null;
+        const sum = nums.reduce((a, b) => parseFloat(a) + parseFloat(b), 0);
+        return `${nums.join(' + ')} = ${sum}`;
+      }
 
       /* ===== 初始化 ===== */
       newSession();
